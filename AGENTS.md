@@ -25,7 +25,7 @@ podman run -p 8080:8080 -e AUTH_TOKEN=change-me -e SESSION_SECRET=change-me-too 
 
 # Manual smoke test against a running instance
 curl -i "http://localhost:8080/verify"                       # expect 302 -> /login
-curl -i "http://localhost:8080/verify" -H "X-Forwarded-Uri: /?token=change-me"  # expect 200 + Set-Cookie
+curl -i "http://localhost:8080/verify" -H "X-Forwarded-Uri: /?token=change-me"  # expect 302 + Set-Cookie + Location: / (token stripped)
 curl -i "http://localhost:8080/login"                         # expect 200 html form
 ```
 
@@ -58,7 +58,11 @@ it into modules unless it genuinely grows past that.
   1. If the request has a valid session cookie → `200`.
   2. Else, look for `?token=` in `X-Forwarded-Uri` (the original request's
      path + query, set by Traefik) → if it matches `AUTH_TOKEN`, set the
-     session cookie and return `200`.
+     session cookie. For GET/HEAD, `302`-redirect back to the same URL with
+     `token` stripped (`cleanRedirectTarget`) so it doesn't linger in the
+     browser's history/Referer; for any other method, return `200` instead
+     (a `302` would otherwise turn a POST/PUT/DELETE into a GET on
+     redirect).
   3. Else → `302` to `/login?rd=<original uri>`.
 - **`/login`** (GET renders the form, POST validates the submitted token).
   On success, sets the session cookie and `302`s to the sanitized `rd`
@@ -138,10 +142,24 @@ it into modules unless it genuinely grows past that.
   the auth middleware attached, or the login page itself becomes
   unreachable (infinite redirect loop).
 - `test/server.test.js` covers the pure helpers (cookie signing/validation,
-  `sanitizeRedirectTarget`, `escapeHtml`, rate limiting) but not the HTTP
-  handlers themselves — still verify `/verify` and `/login` manually with
-  the curl commands above (and ideally against a real Traefik instance)
-  before committing.
+  `sanitizeRedirectTarget`, `cleanRedirectTarget`, `escapeHtml`, rate
+  limiting) but not the HTTP handlers themselves — still verify `/verify`
+  and `/login` manually with the curl commands above (and ideally against a
+  real Traefik instance) before committing.
+- The GET/HEAD-vs-other-methods branch in `handleVerify` (token-in-URL
+  redirect) reads the original request's method from `X-Forwarded-Method`,
+  defaulting to `GET` if absent. Like `X-Forwarded-Uri`/`X-Forwarded-Proto`,
+  this header is only trustworthy with `trustForwardHeader: true` - but
+  unlike those two, a spoofed value here only changes *how* the same cookie
+  gets issued (302-redirect vs. immediate 200), not *whether* it does, so
+  spoofing it isn't a meaningful security issue on its own.
+- `clientKey()` (used for rate limiting) reads the **last** hop of
+  `X-Forwarded-For`, not the first. Traefik always appends the IP that
+  actually connected to it as the last hop, unconditionally - regardless of
+  `trustForwardHeader` - so that hop stays trustworthy even though the
+  earlier ones don't. Taking the first hop instead would let a client
+  rotate a fake prefix per request and bypass the rate limiter entirely;
+  don't "simplify" this back to `split(',')[0]`.
 
 ## Git Workflow
 
