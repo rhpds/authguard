@@ -179,9 +179,10 @@ Three workflows in `.github/workflows/`:
   and `actionlint` over the workflow files. Runs on pushes to `main` and on
   PRs, and is reused by `image-publish.yaml` via `workflow_call`.
 - **`image-publish.yaml`** — builds `quay.io/rhpds/authguard` from
-  `Containerfile`. Gated on `lint.yaml` passing, so a tag can never publish
-  an untested image. PRs build but never push. Pushes to `main` publish a
-  `sha-` tag; `v*` tags publish the semver tags plus `latest`.
+  `Containerfile` and smoke-tests the result. Gated on `lint.yaml`
+  passing, so a tag can never publish an untested image. **Only `v*` tags
+  push to the registry** — pushes to `main` and pull requests build and
+  test the image to prove it still builds, but never publish it.
 - **`release.yaml`** — chained off a successful `image-publish` run for a
   `v*` tag, so a GitHub Release is only created once the image actually
   landed in the registry.

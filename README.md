@@ -127,9 +127,9 @@ podman pull quay.io/rhpds/authguard:v1.0.0   # or :latest
 
 ## Releasing
 
-CI lints, tests, builds, and publishes automatically. Pull requests build
-the image but never push it; pushes to `main` publish a `sha-` tag. To cut
-a release, push an annotated tag:
+CI lints, tests, builds, and publishes automatically. Pushes to `main` and
+pull requests build the image and run its smoke tests, but nothing is
+published to the registry until you push a tag. To cut a release:
 
 ```bash
 git tag -a v1.0.0 -m "authguard v1.0.0"
