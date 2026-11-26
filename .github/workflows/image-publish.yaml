@@ -1,0 +1,116 @@
+---
+name: image-publish
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+  pull_request:
+
+permissions:
+  contents: read
+
+# NOTE ON ACTION CHOICE
+# The rhpds org restricts workflows to an allowlist of actions. `docker/*`
+# and `actions/*-artifact` are not on it, and referencing a disallowed
+# action fails the entire run at startup with no logs. `redhat-actions/*`
+# is allowed, so this builds with buildah and pushes in the same job
+# (the usual build-artifact-then-push split needs upload/download-artifact).
+jobs:
+  # Gate: lint + test must pass before anything is built or pushed.
+  checks:
+    uses: ./.github/workflows/lint.yaml
+
+  build:
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Replaces docker/metadata-action. For a tag v1.2.3 this emits
+      # "v1.2.3 v1.2 v1 latest"; for main it emits "sha-<short>"; for a PR
+      # it emits "pr-<number>" (built only, never pushed).
+      - name: Compute image tags
+        id: meta
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              VERSION="${GITHUB_REF#refs/tags/v}"
+              MAJOR="${VERSION%%.*}"
+              REST="${VERSION#*.}"
+              MINOR="${REST%%.*}"
+              TAGS="v${VERSION} v${MAJOR}.${MINOR} v${MAJOR} latest"
+              PUSH=true
+              ;;
+            refs/heads/main)
+              TAGS="sha-$(git rev-parse --short HEAD)"
+              PUSH=true
+              ;;
+            *)
+              TAGS="pr-${{ github.event.number }}"
+              PUSH=false
+              ;;
+          esac
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "push=${PUSH}" >> "$GITHUB_OUTPUT"
+          echo "Image tags: ${TAGS} (push=${PUSH})"
+
+      - name: Build image
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: authguard
+          tags: ${{ steps.meta.outputs.tags }}
+          containerfiles: ./Containerfile
+          oci: true
+
+      # Smoke-test the built image before it can be pushed: a broken
+      # /verify or /login should fail the pipeline, not reach the registry.
+      - name: Smoke test image
+        run: |
+          set -euo pipefail
+          podman run -d --rm --name authguard-smoke -p 18080:8080 \
+            -e AUTH_TOKEN=smoke-token \
+            -e SESSION_SECRET=smoke-secret \
+            "${{ steps.build.outputs.image }}:$(echo '${{ steps.meta.outputs.tags }}' | cut -d' ' -f1)"
+          for _ in $(seq 1 20); do
+            if curl -sf -o /dev/null "http://localhost:18080/login"; then break; fi
+            sleep 1
+          done
+
+          echo "--- /login should return 200"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18080/login)
+          [ "$code" = "200" ] || { echo "expected 200, got $code"; exit 1; }
+
+          echo "--- /verify without credentials should redirect to /login"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18080/verify)
+          [ "$code" = "302" ] || { echo "expected 302, got $code"; exit 1; }
+
+          echo "--- /verify with a valid token should set the session cookie"
+          curl -s -D /tmp/h -o /dev/null http://localhost:18080/verify \
+            -H 'X-Forwarded-Uri: /?token=smoke-token'
+          grep -qi '^set-cookie: nookbag_auth=' /tmp/h || {
+            echo "expected a nookbag_auth cookie"; exit 1; }
+
+          echo "--- /verify with a bad token must NOT set a cookie"
+          curl -s -D /tmp/h2 -o /dev/null http://localhost:18080/verify \
+            -H 'X-Forwarded-Uri: /?token=wrong-token'
+          if grep -qi '^set-cookie: nookbag_auth=' /tmp/h2; then
+            echo "a cookie was issued for an invalid token"; exit 1
+          fi
+
+          podman stop authguard-smoke
+          echo "smoke tests passed"
+
+      - name: Push image to quay.io
+        if: steps.meta.outputs.push == 'true'
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
+          registry: quay.io/rhpds
+          username: ${{ secrets.QUAY_IO_RHPDS_USERNAME }}
+          password: ${{ secrets.QUAY_IO_RHPDS_TOKEN }}
