@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# WHEN THIS PUSHES
+# Only a v* tag publishes to quay.io. Pushes to main and pull requests
+# build the image and run its smoke tests, to prove it still builds, but
+# never touch the registry.
+#
 # NOTE ON ACTION CHOICE
 # The rhpds org restricts workflows to an allowlist of actions. `docker/*`
 # and `actions/*-artifact` are not on it, and referencing a disallowed
@@ -29,9 +34,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # Replaces docker/metadata-action. For a tag v1.2.3 this emits
-      # "v1.2.3 v1.2 v1 latest"; for main it emits "sha-<short>"; for a PR
-      # it emits "pr-<number>" (built only, never pushed).
+      # Replaces docker/metadata-action. Only a v* tag is ever pushed to
+      # the registry; main and PR builds exist purely to prove the image
+      # still builds and passes its smoke tests.
       - name: Compute image tags
         id: meta
         run: |
@@ -47,7 +52,7 @@ jobs:
               ;;
             refs/heads/main)
               TAGS="sha-$(git rev-parse --short HEAD)"
-              PUSH=true
+              PUSH=false
               ;;
             *)
               TAGS="pr-${{ github.event.number }}"
@@ -105,8 +110,11 @@ jobs:
           podman stop authguard-smoke
           echo "smoke tests passed"
 
+      # Belt and braces: the ref check is repeated here so that a change to
+      # the tag-computation logic above can't silently start pushing from
+      # main or a PR.
       - name: Push image to quay.io
-        if: steps.meta.outputs.push == 'true'
+        if: steps.meta.outputs.push == 'true' && startsWith(github.ref, 'refs/tags/v')
         uses: redhat-actions/push-to-registry@v2
         with:
           image: ${{ steps.build.outputs.image }}
