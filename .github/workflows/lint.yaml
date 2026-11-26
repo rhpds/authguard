@@ -1,0 +1,74 @@
+---
+name: lint
+
+# Lint and test gate. Runs on its own for pushes/PRs, and is also called by
+# image-publish.yaml via workflow_call so that a tag push can never publish
+# an image that hasn't passed these checks.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # authguard has zero runtime dependencies and deliberately ships no
+      # package.json (see AGENTS.md), so there is no ESLint/Prettier to run
+      # here. `node --check` parses each file and fails on syntax errors,
+      # which is the strongest dependency-free check available.
+      - name: Syntax check
+        run: |
+          node --check server.js
+          node --check test/server.test.js
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run tests
+        run: node --test
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned release + checksum. Installed from the release tarball rather
+      # than via a marketplace action because the rhpds org restricts
+      # workflows to an allowlist of actions, and actionlint isn't on it -
+      # a disallowed `uses:` fails the whole run at startup with no logs.
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          TARBALL="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSLf -o "$TARBALL" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${TARBALL}"
+          echo "${ACTIONLINT_SHA256}  ${TARBALL}" | sha256sum --check --strict -
+          tar -xzf "$TARBALL" actionlint
+
+      - name: Lint workflow files
+        run: ./actionlint -color

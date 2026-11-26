@@ -27,6 +27,10 @@ podman run -p 8080:8080 -e AUTH_TOKEN=change-me -e SESSION_SECRET=change-me-too 
 curl -i "http://localhost:8080/verify"                       # expect 302 -> /login
 curl -i "http://localhost:8080/verify" -H "X-Forwarded-Uri: /?token=change-me"  # expect 302 + Set-Cookie + Location: / (token stripped)
 curl -i "http://localhost:8080/login"                         # expect 200 html form
+
+# What CI runs (see .github/workflows/lint.yaml) - run these before pushing
+node --check server.js && node --check test/server.test.js
+node --test
 ```
 
 ## Project Structure
@@ -36,6 +40,7 @@ server.js           Entire service: cookie signing/validation, route handlers, H
 Containerfile       UBI10 node-minimal build, no package.json/npm install needed
 README.md           Usage, config reference, Traefik integration, flow diagrams
 test/server.test.js Unit tests (node --test) for the security-sensitive helpers
+.github/workflows/  CI: lint.yaml (gate), image-publish.yaml (build/push), release.yaml
 ```
 
 Everything lives in `server.js` on purpose — this service is intentionally
@@ -163,6 +168,32 @@ it into modules unless it genuinely grows past that.
 
 ## Git Workflow
 
-- This package is intended to be split out into its own repository. Once
-  that happens, branch from `main`, prefix with `feature/`, `fix/`, or
-  `chore/`, and open PRs against `main`.
+- Branch from `main`, prefix with `feature/`, `fix/`, or `chore/`, and open
+  PRs against `main`.
+
+## CI / Releases
+
+Three workflows in `.github/workflows/`:
+
+- **`lint.yaml`** — syntax check (`node --check`), unit tests (`node --test`),
+  and `actionlint` over the workflow files. Runs on pushes to `main` and on
+  PRs, and is reused by `image-publish.yaml` via `workflow_call`.
+- **`image-publish.yaml`** — builds `quay.io/rhpds/authguard` from
+  `Containerfile`. Gated on `lint.yaml` passing, so a tag can never publish
+  an untested image. PRs build but never push. Pushes to `main` publish a
+  `sha-` tag; `v*` tags publish the semver tags plus `latest`.
+- **`release.yaml`** — chained off a successful `image-publish` run for a
+  `v*` tag, so a GitHub Release is only created once the image actually
+  landed in the registry.
+
+To cut a release, push an annotated tag — everything else is automatic:
+
+```bash
+git tag -a v1.2.3 -m "authguard v1.2.3"
+git push origin v1.2.3
+```
+
+Tag `v1.2.3` publishes `v1.2.3`, `v1.2`, `v1`, and `latest`.
+
+Pushing requires the `QUAY_IO_RHPDS_USERNAME` / `QUAY_IO_RHPDS_TOKEN`
+repository secrets (the org-wide convention — don't rename them).

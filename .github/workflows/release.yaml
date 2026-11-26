@@ -1,0 +1,71 @@
+---
+name: release
+
+# Chained off image-publish rather than triggered directly by the tag push,
+# so a GitHub Release is only ever created once the image actually landed in
+# quay.io. The tag-only guard lives in the job `if` below, because
+# workflow_run fires for every image-publish run (branches and PRs included).
+on:
+  workflow_run:
+    workflows: [image-publish]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Derive tag and version
+        id: vars
+        run: |
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          COMMITISH: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          NOTES=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$COMMITISH" | jq -r '.body')
+
+          BODY="## Container Images
+
+          | Image | Tag |
+          |-------|-----|
+          | \`quay.io/rhpds/authguard\` | \`${TAG}\` |
+
+          Pull with:
+
+          \`\`\`bash
+          podman pull quay.io/rhpds/authguard:${TAG}
+          \`\`\`
+
+          ${NOTES}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists, updating..."
+            gh release edit "$TAG" --notes "$BODY"
+          else
+            gh release create "$TAG" --title "v${VERSION}" --notes "$BODY"
+          fi

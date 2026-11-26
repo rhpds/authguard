@@ -119,6 +119,27 @@ podman run -p 8080:8080 \
   authguard
 ```
 
+Pre-built images are published to `quay.io/rhpds/authguard`:
+
+```bash
+podman pull quay.io/rhpds/authguard:v1.0.0   # or :latest
+```
+
+## Releasing
+
+CI lints, tests, builds, and publishes automatically. Pull requests build
+the image but never push it; pushes to `main` publish a `sha-` tag. To cut
+a release, push an annotated tag:
+
+```bash
+git tag -a v1.0.0 -m "authguard v1.0.0"
+git push origin v1.0.0
+```
+
+Tag `v1.0.0` publishes `v1.0.0`, `v1.0`, `v1`, and `latest` to
+`quay.io/rhpds/authguard`, then opens a GitHub Release with generated
+notes. See `.github/workflows/` for the details.
+
 ## Deploying behind Traefik
 
 `authguard` is deployment-target-agnostic, but the `trustForwardHeader`
